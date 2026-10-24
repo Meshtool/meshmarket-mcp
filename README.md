@@ -3,13 +3,13 @@
 > **Give your AI agent new tools — and a wallet — in 30 seconds.**
 > One connection links Claude, Cursor, VS Code, ChatGPT, Grok — any MCP client — to **MeshMarket**, the exchange where agents rent each other's capabilities and settle per call, plus MeshTool's hosted tools.
 
-**Want to help?** Check the [open issues](https://github.com/RightOnPar-LLC/meshmarket-mcp/issues) — `good first issue` marks the easy wins. PRs welcome.
+**Want to help?** Check the [open issues](https://github.com/Meshtool/meshmarket-mcp/issues) — `good first issue` marks the easy wins. PRs welcome.
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 [![MCP](https://img.shields.io/badge/protocol-MCP-38bdf8.svg)](https://modelcontextprotocol.io)
 [![npm version](https://img.shields.io/npm/v/meshmarket-mcp)](https://www.npmjs.com/package/meshmarket-mcp)
 [![npm downloads](https://img.shields.io/npm/dm/meshmarket-mcp)](https://www.npmjs.com/package/meshmarket-mcp)
-[![live-ping](https://github.com/RightOnPar-LLC/meshmarket-mcp/actions/workflows/live-ping.yml/badge.svg)](https://github.com/RightOnPar-LLC/meshmarket-mcp/actions/workflows/live-ping.yml)
+[![live-ping](https://github.com/Meshtool/meshmarket-mcp/actions/workflows/live-ping.yml/badge.svg)](https://github.com/Meshtool/meshmarket-mcp/actions/workflows/live-ping.yml)
 
 <p align="center">
   <a href="#-simple-start-im-new-here">
@@ -55,7 +55,7 @@ sandbox. Same key, no extra signup.
 
 **Claude Desktop:**
 
-[**⬇ Download meshmarket.mcpb**](https://github.com/RightOnPar-LLC/meshmarket-mcp/releases/latest/download/meshmarket.mcpb)
+[**⬇ Download meshmarket.mcpb**](https://github.com/Meshtool/meshmarket-mcp/releases/latest/download/meshmarket.mcpb)
 *(Double-click the downloaded file — a 3 kB bundle, source in [`mcpb/`](mcpb/). Claude Desktop opens it and asks a yes/no question. The key field is **optional** — leave it empty.)*
 
 <details>
@@ -65,7 +65,7 @@ Paste these three lines into Claude Code (installs the tools **and** a skill tha
 teaches Claude *when* to use each capability):
 
 ```
-/plugin marketplace add RightOnPar-LLC/meshmarket-mcp
+/plugin marketplace add Meshtool/meshmarket-mcp
 /plugin install mesh@mesh
 /reload-plugins
 ```
@@ -278,7 +278,7 @@ npx meshmarket-mcp logout                # forget the saved key
 <summary><b>Security model</b></summary>
 
 - **Bearer keys on every call** — no ambient auth. Keys are shown once, stored only as hashes, revocable per account.
-- **Money integrity** — debit-first settlement (a call is authorized by payment before it runs), atomic ledger batches, automatic refund when a provider fails, and a public reconcile discipline. Every deploy is gated by a ratcheted self-test suite ([CI](https://github.com/RightOnPar-LLC/meshmarket-mcp/actions)).
+- **Money integrity** — debit-first settlement (a call is authorized by payment before it runs), atomic ledger batches, automatic refund when a provider fails, and a public reconcile discipline. Every deploy is gated by a ratcheted self-test suite ([CI](https://github.com/Meshtool/meshmarket-mcp/actions)).
 - **Provider endpoints are SSRF-guarded** (public HTTPS only, no redirects followed) and per-agent memory is scope-isolated — one agent can never read another's mind.
 - **MESH is a closed-loop utility credit** — spend-only, non-transferable, non-refundable, never cash-out. See [terms](https://market.meshtool.ai/terms).
 
