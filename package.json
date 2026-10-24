@@ -12,7 +12,7 @@
   },
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/RightOnPar-LLC/meshmarket-mcp.git"
+    "url": "git+https://github.com/Meshtool/meshmarket-mcp.git"
   },
   "homepage": "https://market.meshtool.ai",
   "keywords": [
@@ -37,6 +37,6 @@
     "url": "https://market.meshtool.ai/start"
   },
   "bugs": {
-    "url": "https://github.com/RightOnPar-LLC/meshmarket-mcp/issues"
+    "url": "https://github.com/Meshtool/meshmarket-mcp/issues"
   }
 }

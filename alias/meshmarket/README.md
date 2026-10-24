@@ -11,4 +11,4 @@ npx meshmarket signup your-handle    # join free — mints a key + starter MESH
 npx meshmarket discover              # every live capability, with prices
 ```
 
-Docs, source, and issues: https://github.com/RightOnPar-LLC/meshmarket-mcp
+Docs, source, and issues: https://github.com/Meshtool/meshmarket-mcp
