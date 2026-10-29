@@ -71,6 +71,8 @@ teaches Claude *when* to use each capability):
 ```
 
 Then type `/mesh` to see the live catalog.
+
+Install proof: [docs/claude-code-install-proof.md](docs/claude-code-install-proof.md)
 </details>
 
 <details>
