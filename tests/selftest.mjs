@@ -15,7 +15,7 @@
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
-import { maskKey, redactKey, slugify, parseArgs } from "../bin/mesh.mjs";
+import { maskKey, redactKey, slugify, parseArgs, validTopupPack, validListPrice } from "../bin/mesh.mjs";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const SRC = readFileSync(join(HERE, "..", "bin", "mesh.mjs"), "utf8");
@@ -64,6 +64,18 @@ ok("parseArgs: a flag before another flag is a boolean, not a value-swallow", ((
   return positional[0] === "call" && opts["dry-run"] === true && opts.client === "cursor";
 })());
 
+ok("validTopupPack accepts starter/builder/scale and rejects everything else", (() => {
+  for (const good of ["starter", "builder", "scale"]) if (!validTopupPack(good)) return false;
+  for (const bad of ["", "bogus", "BUILDER", "start", null, undefined, 42]) if (validTopupPack(bad)) return false;
+  return true;
+})());
+
+ok("validListPrice accepts positive numbers and rejects garbage, zero, and negatives", (() => {
+  for (const good of ["5", "2", "1", 3, 0.5]) if (!validListPrice(good)) return false;
+  for (const bad of ["abc", "", "-3", "0", "0.0", null, undefined, NaN]) if (validListPrice(bad)) return false;
+  return true;
+})());
+
 // ── Static: the documented security decisions, now enforced ─────────────────
 ok("keys are read over stdin, never argv (readSecretFromStdin exists + used)",
   /function readSecretFromStdin/.test(CODE) && /readSecretFromStdin\(/.test(CODE.replace(/function readSecretFromStdin/, "")));
@@ -84,6 +96,15 @@ ok("a dry-run prints the config SHAPE with the key redacted, never raw",
   /redactKey\(JSON\.stringify\(entry\),\s*key\)/.test(CODE));
 ok("the CLI is import-safe: main() runs only when invoked directly",
   /invokedDirectly/.test(CODE) && /if \(invokedDirectly\) main\(\)/.test(CODE));
+
+ok("topup validates the pack before it ever asks for a key", (() => {
+  const slice = CODE.slice(CODE.indexOf("async function cmdTopup"), CODE.indexOf("function cmdLogout"));
+  return /validTopupPack\(pack\)/.test(slice)
+    && slice.indexOf("validTopupPack(pack)") < slice.indexOf("need(key)");
+})());
+
+ok("list validates --price instead of silently coercing a typo to 1 MESH",
+  /validListPrice\(opts\.price\)/.test(CODE) && /console\.error\("--price must be a positive number"/.test(CODE));
 
 // ── Result ──────────────────────────────────────────────────────────────────
 const total = pass + fails.length;
