@@ -160,7 +160,7 @@ export const oneLine = (text, max = 80) => {
 // send its own example_input (an older market). Required fields first; the
 // first anyOf branch when nothing is required. Placeholders, never invented
 // fields.
-export function exampleFromSchema(schema) {
+export function exampleFromSchema(schema, depth = 0) {
   const props = schema && typeof schema.properties === "object" && schema.properties ? schema.properties : null;
   if (!props) return null;
   // Top-level required AND the first satisfiable anyOf branch: the two
@@ -172,7 +172,11 @@ export function exampleFromSchema(schema) {
   for (const k of keys) {
     const p = props[k] || {};
     const t = Array.isArray(p.type) ? p.type[0] : p.type;
-    out[k] = Array.isArray(p.enum) && p.enum.length ? p.enum[0] : t === "number" || t === "integer" ? 0 : t === "boolean" ? false : t === "array" ? [] : t === "object" ? {} : "…";
+    // A required object carries its own required fields; {} would fail the
+    // schema. Recurse, but only a few levels: a self-referencing schema must
+    // not loop.
+    const nested = t === "object" && depth < 4 ? exampleFromSchema(p, depth + 1) : null;
+    out[k] = Array.isArray(p.enum) && p.enum.length ? p.enum[0] : t === "number" || t === "integer" ? 0 : t === "boolean" ? false : t === "array" ? [] : t === "object" ? (nested || {}) : "…";
   }
   return out;
 }

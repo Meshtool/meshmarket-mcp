@@ -33,7 +33,7 @@ const CODE = SRC.split("\n")
   .map((l) => l.replace(/^\s*\/\/.*$/, "").replace(/([^:"'`])\/\/.*$/, "$1"))
   .join("\n");
 
-const MIN_INVARIANTS = 36;
+const MIN_INVARIANTS = 37;
 let pass = 0;
 const fails = [];
 const ok = (name, cond) => { if (cond) { pass++; console.log("  ✓ " + name); } else { fails.push(name); console.error("  ✗ " + name); } };
@@ -94,6 +94,8 @@ ok("oneLine keeps the first sentence and fits one line", oneLine("Redact data. P
 const SCHEMA = { type: "object", properties: { think: { type: "string" }, mode: { type: "string", enum: ["fast", "deep"] } }, required: ["think", "mode"] };
 ok("exampleFromSchema fills the required fields with placeholders, never invented fields",
   JSON.stringify(exampleFromSchema(SCHEMA)) === JSON.stringify({ think: "…", mode: "fast" }) && exampleFromSchema({ type: "object" }) === null);
+ok("exampleFromSchema (Codex #12): a required object gets its OWN required fields filled, depth-limited",
+  JSON.stringify(exampleFromSchema({ type: "object", properties: { config: { type: "object", properties: { text: { type: "string" }, n: { type: "integer" } }, required: ["text"] } }, required: ["config"] })) === JSON.stringify({ config: { text: "…" } }));
 ok("exampleFromSchema (Codex #12): top-level required AND an anyOf branch are both filled, so the ready command can pass",
   JSON.stringify(exampleFromSchema({ type: "object", properties: { mode: { type: "string", enum: ["fast"] }, text: { type: "string" }, content: { type: "string" } }, required: ["mode"], anyOf: [{ required: ["text"] }, { required: ["content"] }] })) === JSON.stringify({ mode: "fast", text: "…" }));
 const desc = renderDescribe({ slug: "agent-brain", name: "Agent Brain", price: 2, kind: "tool", description: "Think.", input_schema: SCHEMA, example_input: { think: "it's here", mode: "fast" } });
