@@ -163,8 +163,11 @@ export const oneLine = (text, max = 80) => {
 export function exampleFromSchema(schema) {
   const props = schema && typeof schema.properties === "object" && schema.properties ? schema.properties : null;
   if (!props) return null;
-  let keys = Array.isArray(schema.required) ? schema.required.filter((k) => k in props) : [];
-  if (!keys.length && Array.isArray(schema.anyOf)) keys = (schema.anyOf.find((b) => b && Array.isArray(b.required) && b.required.length) || { required: [] }).required;
+  // Top-level required AND the first satisfiable anyOf branch: the two
+  // constraints both apply, so an example built from only one of them fails.
+  const keys = Array.isArray(schema.required) ? schema.required.filter((k) => k in props) : [];
+  const branch = Array.isArray(schema.anyOf) ? schema.anyOf.find((b) => b && Array.isArray(b.required) && b.required.length) : null;
+  if (branch) for (const k of branch.required) if (!keys.includes(k)) keys.push(k);
   const out = {};
   for (const k of keys) {
     const p = props[k] || {};
@@ -288,25 +291,38 @@ async function deskFetch(path, { key, body, method = "POST" } = {}) {
 export async function deskTool(key, name, args = {}) {
   const r = await deskFetch("/mcp", { key, body: { jsonrpc: "2.0", id: 1, method: "tools/call", params: { name, arguments: args } } });
   if (r.status === 0) return { ok: false, why: `can't reach DevDesk (${r.body?.error})` };
+  // An outage (a proxy's HTML 502, an empty body) must never read as an empty
+  // desk or a submitted task: no JSON-RPC envelope means no answer.
+  if (!r.body || typeof r.body !== "object") return { ok: false, why: `DevDesk did not answer properly (HTTP ${r.status}). Try again shortly.` };
   if (r.body?.error) {
     const msg = r.body.error.message || String(r.body.error);
     // The key door only serves a desk that already exists; one sign-in creates it.
     const hint = r.status === 401 ? "\nIf you have never opened your desk, open it once:  mesh desk login" : "";
     return { ok: false, why: `DevDesk refused (${r.status}): ${msg}${hint}` };
   }
-  const result = r.body?.result || {};
-  const text = (result.content || []).map((c) => c.text ?? "").join("\n");
+  if (!r.ok) return { ok: false, why: `DevDesk refused (HTTP ${r.status}).` };
+  const result = r.body.result;
+  if (!result || !Array.isArray(result.content)) return { ok: false, why: `DevDesk sent no result (HTTP ${r.status}).` };
+  const text = result.content.map((c) => c.text ?? "").join("\n");
   let data = null; try { data = JSON.parse(text); } catch { /* plain text */ }
   if (result.isError) return { ok: false, why: text || "DevDesk said no" };
   return { ok: true, text, data };
 }
 
 // Opening a browser: argv only (never a shell string), detached, output ignored.
+// A missing launcher (a minimal container has no xdg-open) is reported by an
+// ASYNC 'error' event, not a throw, so wait for 'spawn' or 'error' before
+// claiming anything; otherwise the CLI says "Opened" and then crashes.
 function openInBrowser(url) {
   const [cmd, args] = process.platform === "darwin" ? ["open", [url]]
     : process.platform === "win32" ? ["rundll32", ["url.dll,FileProtocolHandler", url]]
     : ["xdg-open", [url]];
-  try { spawn(cmd, args, { stdio: "ignore", detached: true }).unref(); return true; } catch { return false; }
+  return new Promise((resolve) => {
+    let child;
+    try { child = spawn(cmd, args, { stdio: "ignore", detached: true }); } catch { resolve(false); return; }
+    child.once("error", () => resolve(false));
+    child.once("spawn", () => { child.unref(); resolve(true); });
+  });
 }
 
 export const workLine = (w) => `  #${w.id}  ${String(w.state).padEnd(6)} ${w.title}${w.claim ? `  — held by ${w.claim.agent || "grant " + w.claim.grant} until ${w.claim.until}` : ""}`;
@@ -319,7 +335,7 @@ async function cmdDesk(sub, positional, opts) {
     if (!r.ok) { console.error(r.status === 0 ? `Can't reach DevDesk (${r.body?.error}).` : `DevDesk refused (${r.status}): ${r.body?.error || "no reason given"}`); process.exit(1); }
     console.error(`One-time sign-in link — works once, until ${r.body.expires_at}. Your key is not in it.`);
     console.log(r.body.url);
-    if ("open" in opts || sub === "open") console.error(openInBrowser(r.body.url) ? "Opened in your browser." : "Could not open a browser here; open the link above yourself.");
+    if ("open" in opts || sub === "open") console.error((await openInBrowser(r.body.url)) ? "Opened in your browser." : "Could not open a browser here; open the link above yourself.");
     return;
   }
   if (sub === "ls") {

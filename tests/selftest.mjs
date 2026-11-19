@@ -33,7 +33,7 @@ const CODE = SRC.split("\n")
   .map((l) => l.replace(/^\s*\/\/.*$/, "").replace(/([^:"'`])\/\/.*$/, "$1"))
   .join("\n");
 
-const MIN_INVARIANTS = 33;
+const MIN_INVARIANTS = 36;
 let pass = 0;
 const fails = [];
 const ok = (name, cond) => { if (cond) { pass++; console.log("  ✓ " + name); } else { fails.push(name); console.error("  ✗ " + name); } };
@@ -94,6 +94,8 @@ ok("oneLine keeps the first sentence and fits one line", oneLine("Redact data. P
 const SCHEMA = { type: "object", properties: { think: { type: "string" }, mode: { type: "string", enum: ["fast", "deep"] } }, required: ["think", "mode"] };
 ok("exampleFromSchema fills the required fields with placeholders, never invented fields",
   JSON.stringify(exampleFromSchema(SCHEMA)) === JSON.stringify({ think: "…", mode: "fast" }) && exampleFromSchema({ type: "object" }) === null);
+ok("exampleFromSchema (Codex #12): top-level required AND an anyOf branch are both filled, so the ready command can pass",
+  JSON.stringify(exampleFromSchema({ type: "object", properties: { mode: { type: "string", enum: ["fast"] }, text: { type: "string" }, content: { type: "string" } }, required: ["mode"], anyOf: [{ required: ["text"] }, { required: ["content"] }] })) === JSON.stringify({ mode: "fast", text: "…" }));
 const desc = renderDescribe({ slug: "agent-brain", name: "Agent Brain", price: 2, kind: "tool", description: "Think.", input_schema: SCHEMA, example_input: { think: "it's here", mode: "fast" } });
 ok("describe shows the schema, the required fields, the example and a ready mesh call line",
   desc.includes('"required"') && desc.includes("Required: think, mode") && desc.includes("mesh call agent-brain --input"));
@@ -162,7 +164,38 @@ ok("a work line shows id, state, title and who holds it", workLine({ id: "7", st
   ok("e2e: the key never travels in a URL or a request body", seen.every((x) => !x.url.includes(A_KEY) && !x.body.includes(A_KEY)));
   ok("e2e: no command printed the key (stdout or stderr)", [d1, d2, c1, l1, ls, tk, tkBad, st].every((r) => !r.all.includes(A_KEY)));
   ok("e2e: describe and discover are keyless (no key sent to read the catalog)", seen.filter((x) => x.url.startsWith("/api/capabilities/")).every((x) => !x.auth && !x.xkey));
+  // Codex review on #12: launching a browser on a machine without one must not
+  // crash or claim success. PATH is emptied so xdg-open/open cannot be found.
+  const op = await new Promise((resolve) => {
+    const p = spawn(process.execPath, [join(HERE, "..", "bin", "mesh.mjs"), "desk", "login", "--open"], { env: { ...process.env, PATH: "", HOME: home, USERPROFILE: home, MESH_API_BASE: base, MESH_DESK_BASE: base, CI: "1" } });
+    let out = "", err = ""; p.stdout.on("data", (d) => (out += d)); p.stderr.on("data", (d) => (err += d));
+    p.on("close", (code) => resolve({ code, out, err }));
+  });
+  ok("e2e (Codex #12): --open with no browser launcher exits 0, keeps the link, and says to open it yourself (no false 'Opened')",
+    op.code === 0 && op.out.includes("/signin/once#") && /open the link above yourself/.test(op.err) && !/Opened in your browser/.test(op.err));
   server.close();
+}
+
+// Codex review on #12: a DevDesk outage (an HTML 502 from a proxy) must never
+// read as an empty desk or a submitted task.
+{
+  const down = createServer((req, res) => { req.resume(); req.on("end", () => { res.writeHead(502, { "content-type": "text/html" }); res.end("<html><body>502 Bad Gateway</body></html>"); }); });
+  await new Promise((r) => down.listen(0, "127.0.0.1", r));
+  const dbase = `http://127.0.0.1:${down.address().port}`;
+  const home2 = mkdtempSync(join(tmpdir(), "mesh-selftest-down-"));
+  mkdirSync(join(home2, ".mesh"), { recursive: true });
+  writeFileSync(join(home2, ".mesh", "credentials"), JSON.stringify({ handle: "tester", key: A_KEY }), { mode: 0o600 });
+  const runDown = (...args) => new Promise((resolve) => {
+    const p = spawn(process.execPath, [join(HERE, "..", "bin", "mesh.mjs"), ...args], { env: { ...process.env, HOME: home2, USERPROFILE: home2, MESH_API_BASE: dbase, MESH_DESK_BASE: dbase, CI: "1" } });
+    let out = "", err = ""; p.stdout.on("data", (d) => (out += d)); p.stderr.on("data", (d) => (err += d));
+    p.on("close", (code) => resolve({ code, out, err }));
+  });
+  const st = await runDown("desk", "status");
+  const tk = await runDown("desk", "task", "--title", "t", "--instructions", "i");
+  const ls = await runDown("desk", "ls");
+  ok("e2e (Codex #12): a DevDesk 502 makes status / task / ls exit 1 and name the HTTP status, never 'no work' or 'Task #undefined'",
+    [st, tk, ls].every((r) => r.code === 1 && /502/.test(r.err)) && !/no work on this desk/.test(st.out) && !/undefined/.test(tk.out + tk.err));
+  down.close();
 }
 
 // ── Result ──────────────────────────────────────────────────────────────────
