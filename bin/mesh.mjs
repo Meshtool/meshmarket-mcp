@@ -91,7 +91,7 @@ function report(r, okMessage) {
   else if (r.status === 401) console.error("Not signed in (or key rejected). Run: mesh signup <handle>");
   else if (r.status === 402) console.error(`Payment required — need ${r.body?.price ?? "?"} MESH, have ${r.body?.balance ?? "?"}. Run: mesh topup starter`);
   else if (r.status === 429) console.error(`Rate limited: ${r.body?.error || "slow down and try again shortly"}`);
-  else if (r.status === 400 && r.body?.error === "invalid_input") console.error(renderInvalidInput(r.body));
+  else if ((r.status === 400 && r.body?.error === "invalid_input") || (r.body?.refunded === true && r.body?.input_schema)) console.error(renderInvalidInput(r.body));
   else console.error(`Error (HTTP ${r.status}): ${r.body?.error || JSON.stringify(r.body) || "no response body"}`);
   return false;
 }
@@ -209,9 +209,17 @@ export function renderDescribe(c) {
   return lines.join("\n");
 }
 
+// Two answers carry a lesson: the market's pre-charge refusal (400
+// invalid_input, for a schema that opts in) and the usual one, a refund after
+// the provider rejected the input (refunded:true + input_schema). Both cost 0.
 export function renderInvalidInput(b) {
-  const out = [`Input refused — nothing was charged (${b.charged ?? 0} MESH). "${b.capability || "?"}" needs:`];
+  const refund = b.error !== "invalid_input";
+  const out = [refund
+    ? `Refunded — nothing was charged (net ${b.charged ?? 0} MESH). The provider rejected the input for "${b.capability || "this capability"}": ${b.detail || "bad input"}${b.note ? ` — ${b.note}` : ""}`
+    : `Input refused — nothing was charged (${b.charged ?? 0} MESH). "${b.capability || "?"}" needs:`];
   for (const e of b.errors || []) out.push(`  • ${e.field}: ${e.problem}${e.about ? `\n      ${e.about}` : ""}`);
+  const req = Array.isArray(b.input_schema?.required) ? b.input_schema.required : [];
+  if (refund && req.length) out.push(`  required: ${req.join(", ")}`);
   if (b.example) out.push("", "Example input:", "  " + JSON.stringify(b.example));
   if (b.capability) out.push("", `Full contract:  mesh describe ${b.capability}`);
   return out.join("\n");

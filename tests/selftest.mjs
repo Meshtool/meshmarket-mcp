@@ -33,7 +33,7 @@ const CODE = SRC.split("\n")
   .map((l) => l.replace(/^\s*\/\/.*$/, "").replace(/([^:"'`])\/\/.*$/, "$1"))
   .join("\n");
 
-const MIN_INVARIANTS = 37;
+const MIN_INVARIANTS = 39;
 let pass = 0;
 const fails = [];
 const ok = (name, cond) => { if (cond) { pass++; console.log("  ✓ " + name); } else { fails.push(name); console.error("  ✗ " + name); } };
@@ -105,6 +105,9 @@ ok("describe's ready command survives an apostrophe in the example (POSIX single
 ok("describe without a schema says so instead of inventing one", /none declared/.test(renderDescribe({ slug: "x", description: "d" })));
 const inv = renderInvalidInput({ error: "invalid_input", capability: "safety-scrub", charged: 0, errors: [{ field: "text", problem: "required (or one of: content)", about: "the text to scan" }], example: { text: "…" } });
 ok("an invalid_input refusal is shown as 'nothing was charged', with each field, the example and describe", /nothing was charged \(0 MESH\)/.test(inv) && inv.includes("text: required") && inv.includes('{"text":"…"}') && inv.includes("mesh describe safety-scrub"));
+const lesson = renderInvalidInput({ error: "provider_failed", refunded: true, capability: "agent-shootout", charged: 0, detail: "job_required", note: "Send a job title.", input_schema: { type: "object", properties: { job: { type: "string" } }, required: ["job"] }, example: { job: "…" } });
+ok("a teaching refund (provider rejected the input) shows 'refunded — nothing charged', why, the required fields and the example",
+  /refunded/i.test(lesson) && /nothing was charged/.test(lesson) && lesson.includes("job_required") && lesson.includes("Send a job title.") && lesson.includes("required: job") && lesson.includes('{"job":"…"}'));
 ok("a work line shows id, state, title and who holds it", workLine({ id: "7", state: "open", title: "Fix it", claim: { agent: "Claude", until: "T" } }) === "  #7  open   Fix it  — held by Claude until T");
 
 // ── end to end: the real CLI against a stub market + stub DevDesk ───────────
@@ -119,6 +122,7 @@ ok("a work line shows id, state, title and who holds it", workLine({ id: "7", st
       const send = (code, o) => { res.writeHead(code, { "content-type": "application/json" }); res.end(JSON.stringify(o)); };
       if (req.url === "/api/capabilities/agent-brain") return send(200, { slug: "agent-brain", name: "Agent Brain", price: 2, kind: "tool", description: "Think hard.", input_schema: SCHEMA, example_input: { think: "…", mode: "fast" } });
       if (req.url === "/api/capabilities/nope") return send(404, { error: "not_found" });
+      if (req.url === "/api/call/agent-shootout") return send(502, { error: "provider_failed", refunded: true, call_id: "c1", detail: "job_required", note: "Send a job title.", charged: 0, input_schema: { type: "object", properties: { job: { type: "string" } }, required: ["job"] }, example: { job: "…" } });
       if (req.url === "/api/call/agent-brain") return send(400, { error: "invalid_input", capability: "agent-brain", charged: 0, errors: [{ field: "think", problem: "required" }], example: { think: "…", mode: "fast" } });
       if (req.url === "/api/signin/link") return req.headers.authorization === `Bearer ${A_KEY}` ? send(201, { ok: true, url: "https://desk.example/signin/once#CODE123", expires_at: "2026-11-19T23:59:00Z", single_use: true }) : send(401, { error: "the market did not recognize that key" });
       if (req.url === "/mcp") {
@@ -151,6 +155,8 @@ ok("a work line shows id, state, title and who holds it", workLine({ id: "7", st
   ok("e2e: describe on an unknown slug exits 1 and points at discover", d2.code === 1 && /mesh discover/.test(d2.err));
   const c1 = await run("call", "agent-brain", "--input", '{"prompt":"x"}');
   ok("e2e: a refused input says nothing was charged and shows the example, exit 1", c1.code === 1 && /nothing was charged/.test(c1.err) && c1.err.includes('{"think":"…","mode":"fast"}'));
+  const c2 = await run("call", "agent-shootout", "--input", '{"title":"x"}');
+  ok("e2e: a teaching refund prints the lesson (refunded, why, example), not a bare HTTP 502, exit 1", c2.code === 1 && /nothing was charged/.test(c2.err) && c2.err.includes("job_required") && c2.err.includes('{"job":"…"}') && !/Error \(HTTP 502\)/.test(c2.err));
   const l1 = await run("desk", "login");
   ok("e2e: mesh desk login prints the one-time link (stdout) and says the key is not in it", l1.code === 0 && l1.out.trim() === "https://desk.example/signin/once#CODE123" && /key is not in it/.test(l1.err));
   const ls = await run("desk", "ls");

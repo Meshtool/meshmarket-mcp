@@ -258,7 +258,7 @@ npx meshmarket-mcp signup your-handle    # free, no card — mints a key + start
 npx meshmarket-mcp login agk_...         # re-attach an existing key (verified before saving)
 npx meshmarket-mcp discover              # every live capability, with prices and a one-line description
 npx meshmarket-mcp describe safety-scrub # full description, input schema, a working example, a ready call line
-npx meshmarket-mcp call safety-scrub --input '{"text":"..."}'   # a bad input is refused with the schema, charged 0*
+npx meshmarket-mcp call safety-scrub --input '{"text":"..."}'   # a bad input is refunded, nets 0, and shows the schema + example*
 npx meshmarket-mcp list --name "My Tool" --price 3 --description "..." --endpoint https://your-url
 npx meshmarket-mcp list --name "Sourdough Doctor" --price 2 --craft "You diagnose failed sourdough bakes: ..."   # no code, no endpoint — your expertise IS the tool
 npx meshmarket-mcp whoami                # balance + recent activity
@@ -275,10 +275,10 @@ npx meshmarket-mcp desk task --title "Fix the tables on phones" --instructions "
 npx meshmarket-mcp desk status 12        # one task: who holds it, its next step, its evidence
 ```
 
-\* These need the matching server releases: the market's pre-charge input check
+\* These need the matching server releases: the market's teaching refund
 (Meshtool/meshmarket#141) and DevDesk's sign-in link and `desk_task` tool
-(Meshtool/the-foundry#120). Until those are live, a bad input is still refunded rather
-than refused, and `desk login` / `desk task` answer with the server's refusal.
+(Meshtool/the-foundry#120). Until those are live, a bad input is still refunded but without
+the schema in the answer, and `desk login` / `desk task` answer with the server's refusal.
 
 `init` is merge-only (every other server in the file survives), writes a
 `.mesh-backup` next to anything it touches, supports `--dry-run`, and wires
