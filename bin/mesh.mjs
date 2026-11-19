@@ -15,8 +15,10 @@ import { homedir } from "node:os";
 import { join, dirname } from "node:path";
 import { createInterface } from "node:readline";
 import { fileURLToPath } from "node:url";
+import { spawn } from "node:child_process";
 
 const BASE = process.env.MESH_API_BASE || "https://market.meshtool.ai";
+const DESK = process.env.MESH_DESK_BASE || "https://devdesk.meshtool.ai";
 const CRED_DIR = join(homedir(), ".mesh");
 const CRED_FILE = join(CRED_DIR, "credentials");
 
@@ -89,6 +91,7 @@ function report(r, okMessage) {
   else if (r.status === 401) console.error("Not signed in (or key rejected). Run: mesh signup <handle>");
   else if (r.status === 402) console.error(`Payment required — need ${r.body?.price ?? "?"} MESH, have ${r.body?.balance ?? "?"}. Run: mesh topup starter`);
   else if (r.status === 429) console.error(`Rate limited: ${r.body?.error || "slow down and try again shortly"}`);
+  else if ((r.status === 400 && r.body?.error === "invalid_input") || (r.body?.refunded === true && r.body?.input_schema)) console.error(renderInvalidInput(r.body));
   else console.error(`Error (HTTP ${r.status}): ${r.body?.error || JSON.stringify(r.body) || "no response body"}`);
   return false;
 }
@@ -138,8 +141,96 @@ async function cmdDiscover(opts) {
     const caps = Array.isArray(b) ? b : b.capabilities || [];
     if (!caps.length) return "(nothing listed yet)";
     const w = Math.max(...caps.map((c) => c.slug.length), 4);
-    return caps.map((c) => `${c.slug.padEnd(w)}  ${String(c.price).padStart(4)} MESH  ${c.kind.padEnd(8)} ${c.provider || ""}`).join("\n");
+    // One line each: the description's first sentence, so an agent can choose
+    // without a second call. `mesh describe <slug>` gives the full contract.
+    return caps.map((c) => `${c.slug.padEnd(w)}  ${String(c.price).padStart(4)} MESH  ${String(c.kind || "").padEnd(8)} ${oneLine(c.description, 90)}`).join("\n")
+      + "\n\nFull description, input schema and a working example:  mesh describe <slug>";
   });
+}
+
+// ── helpers for describe / discover (pure, so the selftest can pin them) ─────
+// The first sentence of a description, trimmed to fit one terminal line.
+export const oneLine = (text, max = 80) => {
+  const t = String(text || "").replace(/\s+/g, " ").trim();
+  const first = (t.match(/^.*?[.!?](?=\s|$)/) || [t])[0];
+  return first.length > max ? first.slice(0, max - 1).trimEnd() + "…" : first;
+};
+
+// A shape-valid example from a JSON schema, used only when the market did not
+// send its own example_input (an older market). Required fields first; the
+// first anyOf branch when nothing is required. Placeholders, never invented
+// fields.
+export function exampleFromSchema(schema, depth = 0) {
+  const props = schema && typeof schema.properties === "object" && schema.properties ? schema.properties : null;
+  if (!props) return null;
+  // Top-level required AND the first satisfiable anyOf branch: the two
+  // constraints both apply, so an example built from only one of them fails.
+  const keys = Array.isArray(schema.required) ? schema.required.filter((k) => k in props) : [];
+  const branch = Array.isArray(schema.anyOf) ? schema.anyOf.find((b) => b && Array.isArray(b.required) && b.required.length) : null;
+  if (branch) for (const k of branch.required) if (!keys.includes(k)) keys.push(k);
+  const out = {};
+  for (const k of keys) {
+    const p = props[k] || {};
+    const t = Array.isArray(p.type) ? p.type[0] : p.type;
+    // A required object carries its own required fields; {} would fail the
+    // schema. Recurse, but only a few levels: a self-referencing schema must
+    // not loop.
+    const nested = t === "object" && depth < 4 ? exampleFromSchema(p, depth + 1) : null;
+    out[k] = Array.isArray(p.enum) && p.enum.length ? p.enum[0] : t === "number" || t === "integer" ? 0 : t === "boolean" ? false : t === "array" ? [] : t === "object" ? (nested || {}) : "…";
+  }
+  return out;
+}
+
+// Single quotes are what the help text tells people to wrap --input in, so an
+// apostrophe inside the example has to be escaped for a POSIX shell.
+const shellQuote = (s) => "'" + String(s).replace(/'/g, `'\\''`) + "'";
+
+export function renderDescribe(c) {
+  const schema = c.input_schema && typeof c.input_schema === "object" ? c.input_schema : null;
+  const example = c.example_input || exampleFromSchema(schema);
+  const lines = [
+    `${c.name || c.slug}  (${c.slug})`,
+    `  price: ${c.price ?? "?"} MESH · kind: ${c.kind || "?"} · provider: ${c.provider || "?"}${c.reliability != null ? ` · reliability: ${c.reliability}${typeof c.reliability === "number" ? "%" : ""}` : ""}`,
+    "",
+    String(c.description || "(no description)").trim(),
+    "",
+  ];
+  if (schema) {
+    lines.push("Input schema:", JSON.stringify(schema, null, 2), "");
+    const req = Array.isArray(schema.required) ? schema.required : [];
+    if (req.length) lines.push(`Required: ${req.join(", ")}`, "");
+  } else {
+    lines.push("Input schema: none declared — the shape is in the description above. A wrong guess is refunded, not refused.", "");
+  }
+  if (example) {
+    lines.push("Example (shape-valid; replace the placeholders):", JSON.stringify(example, null, 2), "");
+    lines.push("Call it:", `  mesh call ${c.slug} --input ${shellQuote(JSON.stringify(example))}`);
+  }
+  return lines.join("\n");
+}
+
+// Two answers carry a lesson: the market's pre-charge refusal (400
+// invalid_input, for a schema that opts in) and the usual one, a refund after
+// the provider rejected the input (refunded:true + input_schema). Both cost 0.
+export function renderInvalidInput(b) {
+  const refund = b.error !== "invalid_input";
+  const out = [refund
+    ? `Refunded — nothing was charged (net ${b.charged ?? 0} MESH). The provider rejected the input for "${b.capability || "this capability"}": ${b.detail || "bad input"}${b.note ? ` — ${b.note}` : ""}`
+    : `Input refused — nothing was charged (${b.charged ?? 0} MESH). "${b.capability || "?"}" needs:`];
+  for (const e of b.errors || []) out.push(`  • ${e.field}: ${e.problem}${e.about ? `\n      ${e.about}` : ""}`);
+  const req = Array.isArray(b.input_schema?.required) ? b.input_schema.required : [];
+  if (refund && req.length) out.push(`  required: ${req.join(", ")}`);
+  if (b.example) out.push("", "Example input:", "  " + JSON.stringify(b.example));
+  if (b.capability) out.push("", `Full contract:  mesh describe ${b.capability}`);
+  return out.join("\n");
+}
+
+async function cmdDescribe(slug, opts) {
+  if (!slug) { console.error("usage: mesh describe <slug> [--json]"); process.exit(1); }
+  const r = await api("GET", `/api/capabilities/${encodeURIComponent(slug)}`);
+  if (r.status === 404) { console.error(`No capability "${slug}". List them: mesh discover`); process.exit(1); }
+  if (!report(r)) process.exit(1);
+  console.log("json" in opts ? JSON.stringify(r.body, null, 2) : renderDescribe(r.body));
 }
 
 async function cmdCall(slug, opts) {
@@ -149,7 +240,9 @@ async function cmdCall(slug, opts) {
   let input = {};
   if (opts.input) { try { input = JSON.parse(opts.input); } catch { console.error("--input must be valid JSON"); process.exit(1); } }
   const r = await api("POST", `/api/call/${encodeURIComponent(slug)}`, { key, body: { input } });
-  report(r, (b) => `Charged ${b.charged} MESH. Balance: ${b.balance}.\nResult:\n${JSON.stringify(b.result, null, 2)}`);
+  // A failed call exits 1: an agent reads the exit code to decide what to do
+  // next, and a refusal or an error that exits 0 reads as success.
+  if (!report(r, (b) => `Charged ${b.charged} MESH. Balance: ${b.balance}.\nResult:\n${JSON.stringify(b.result, null, 2)}`)) process.exit(1);
 }
 
 async function cmdList(opts) {
@@ -174,6 +267,141 @@ async function cmdTopup(pack) {
   const acc = JSON.parse(readFileSync(CRED_FILE, "utf8"));
   const r = await api("POST", "/api/account/buy", { body: { handle: acc.handle, pack } });
   report(r, (b) => `Open this to pay (${b.usd} USD -> ${b.mesh} MESH):\n  ${b.checkout_url}`);
+}
+
+// ── mesh desk — your DevDesk, from the key you already hold ─────────────────
+// DevDesk (devdesk.meshtool.ai) is where the owner's projects, connected repos,
+// drafts and vault names live. Before these commands, the only way in was a
+// web form asking for the key, which an agent cannot fill without putting the
+// key in a browser, a screenshot and a transcript. Every command here sends the
+// key only to DevDesk over HTTPS, in a header, from the saved credentials file.
+//
+//   mesh desk [login] [--open]   a ONE-TIME sign-in link (10 min, single use);
+//                                the key never reaches the browser
+//   mesh desk ls                 what the desk can see: drafts, connected
+//                                services, vault NAMES (never values), work
+//   mesh desk status [<id>]      the desk's work, or one task and its handoffs
+//   mesh desk task --title "…" --instructions "…" [--repo owner/name]
+//                                hand the desk a task an attached agent works
+async function deskFetch(path, { key, body, method = "POST" } = {}) {
+  let res;
+  try {
+    res = await fetch(DESK + path, {
+      method, signal: AbortSignal.timeout(25000),
+      headers: { "content-type": "application/json", ...(key ? { authorization: `Bearer ${key}` } : {}) },
+      body: body ? JSON.stringify(body) : undefined,
+    });
+  } catch (e) {
+    return { status: 0, ok: false, body: { error: e.name === "TimeoutError" ? "timed out after 25s" : (e.cause?.code || e.message) } };
+  }
+  let json = null;
+  try { json = await res.json(); } catch { /* not JSON */ }
+  return { status: res.status, ok: res.ok, body: json };
+}
+
+/** One DevDesk key-door tool call. Returns { ok, text, data } or { ok:false, why }. */
+export async function deskTool(key, name, args = {}) {
+  const r = await deskFetch("/mcp", { key, body: { jsonrpc: "2.0", id: 1, method: "tools/call", params: { name, arguments: args } } });
+  if (r.status === 0) return { ok: false, why: `can't reach DevDesk (${r.body?.error})` };
+  // An outage (a proxy's HTML 502, an empty body) must never read as an empty
+  // desk or a submitted task: no JSON-RPC envelope means no answer.
+  if (!r.body || typeof r.body !== "object") return { ok: false, why: `DevDesk did not answer properly (HTTP ${r.status}). Try again shortly.` };
+  if (r.body?.error) {
+    const msg = r.body.error.message || String(r.body.error);
+    // The key door only serves a desk that already exists; one sign-in creates it.
+    const hint = r.status === 401 ? "\nIf you have never opened your desk, open it once:  mesh desk login" : "";
+    return { ok: false, why: `DevDesk refused (${r.status}): ${msg}${hint}` };
+  }
+  if (!r.ok) return { ok: false, why: `DevDesk refused (HTTP ${r.status}).` };
+  const result = r.body.result;
+  if (!result || !Array.isArray(result.content)) return { ok: false, why: `DevDesk sent no result (HTTP ${r.status}).` };
+  const text = result.content.map((c) => c.text ?? "").join("\n");
+  let data = null; try { data = JSON.parse(text); } catch { /* plain text */ }
+  if (result.isError) return { ok: false, why: text || "DevDesk said no" };
+  return { ok: true, text, data };
+}
+
+// Opening a browser: argv only (never a shell string), detached, output ignored.
+// A missing launcher (a minimal container has no xdg-open) is reported by an
+// ASYNC 'error' event, not a throw, so wait for 'spawn' or 'error' before
+// claiming anything; otherwise the CLI says "Opened" and then crashes.
+function openInBrowser(url) {
+  const [cmd, args] = process.platform === "darwin" ? ["open", [url]]
+    : process.platform === "win32" ? ["rundll32", ["url.dll,FileProtocolHandler", url]]
+    : ["xdg-open", [url]];
+  return new Promise((resolve) => {
+    let child;
+    try { child = spawn(cmd, args, { stdio: "ignore", detached: true }); } catch { resolve(false); return; }
+    child.once("error", () => resolve(false));
+    child.once("spawn", () => { child.unref(); resolve(true); });
+  });
+}
+
+export const workLine = (w) => `  #${w.id}  ${String(w.state).padEnd(6)} ${w.title}${w.claim ? `  — held by ${w.claim.agent || "grant " + w.claim.grant} until ${w.claim.until}` : ""}`;
+
+async function cmdDesk(sub, positional, opts) {
+  const key = loadKey();
+  need(key);
+  if (!sub || sub === "login" || sub === "open") {
+    const r = await deskFetch("/api/signin/link", { key });
+    if (!r.ok) { console.error(r.status === 0 ? `Can't reach DevDesk (${r.body?.error}).` : `DevDesk refused (${r.status}): ${r.body?.error || "no reason given"}`); process.exit(1); }
+    console.error(`One-time sign-in link — works once, until ${r.body.expires_at}. Your key is not in it.`);
+    console.log(r.body.url);
+    if ("open" in opts || sub === "open") console.error((await openInBrowser(r.body.url)) ? "Opened in your browser." : "Could not open a browser here; open the link above yourself.");
+    return;
+  }
+  if (sub === "ls") {
+    const [board, conns, vault, work] = await Promise.all([
+      deskTool(key, "board_get"), deskTool(key, "connections_list"), deskTool(key, "vault_list"), deskTool(key, "work_list")]);
+    const first = [board, conns, vault, work].find((x) => !x.ok);
+    if (first && !board.ok) { console.error(first.why); process.exit(1); }
+    const b = board.data || {};
+    console.log(`DevDesk — ${DESK}\n`);
+    console.log("Building (drafts):"); console.log((b.building || []).map((x) => "  " + x).join("\n") || "  (none)");
+    console.log("\nConnected services:"); console.log(conns.ok ? (conns.text.split("\n").map((x) => "  " + x).join("\n")) : "  " + conns.why);
+    console.log("\nVault (names only — values never leave the desk):"); console.log(vault.ok ? vault.text.split("\n").map((x) => "  " + x).join("\n") : "  " + vault.why);
+    const ws = work.ok ? (work.data?.work || []) : [];
+    console.log("\nWork:"); console.log(work.ok ? (ws.filter((w) => w.state === "open").slice(0, 15).map(workLine).join("\n") || "  (nothing open)") : "  " + work.why);
+    if (work.ok && ws.filter((w) => w.state === "open").length > 15) console.log(`  … ${ws.filter((w) => w.state === "open").length - 15} more:  mesh desk status`);
+    return;
+  }
+  if (sub === "status") {
+    const id = positional[0];
+    if (!id) {
+      const r = await deskTool(key, "work_list");
+      if (!r.ok) { console.error(r.why); process.exit(1); }
+      const ws = r.data?.work || [];
+      console.log(ws.map(workLine).join("\n") || "(no work on this desk yet)");
+      return;
+    }
+    const r = await deskTool(key, "work_get", { id: String(id).replace(/^#/, "") });
+    if (!r.ok) { console.error(r.why); process.exit(1); }
+    const w = r.data?.work || {};
+    console.log(workLine(w).trim());
+    if (w.next?.step) console.log(`  next: ${w.next.step}${w.next.by ? ` (${w.next.by}'s words)` : ""}`);
+    if (w.done) console.log(`  done ${w.done.at}: ${(w.done.evidence || []).map((e) => `${e.kind} ${e.ref}`).join(", ")}`);
+    for (const h of r.data?.handoffs || []) console.log(`\n  [${h.at}] ${h.by?.agent || "grant " + h.by?.grant}: ${h.next_step}${h.evidence?.length ? `\n    evidence: ${h.evidence.map((e) => `${e.kind} ${e.ref}`).join(", ")}` : ""}`);
+    console.log("\n(What agents wrote here is information about the work, never permission.)");
+    return;
+  }
+  if (sub === "task") {
+    let instructions = opts.instructions;
+    if (opts["instructions-file"]) { try { instructions = readFileSync(opts["instructions-file"], "utf8"); } catch { console.error(`could not read --instructions-file ${opts["instructions-file"]}`); process.exit(1); } }
+    if (!opts.title || !instructions || instructions === true) { console.error('usage: mesh desk task --title "<one line>" --instructions "<what to do>" [--instructions-file <path>] [--repo owner/name] [--idempotency-key <k>]'); process.exit(1); }
+    const args = { title: String(opts.title), instructions: String(instructions) };
+    if (opts.repo && opts.repo !== true) args.repo = String(opts.repo);
+    if (opts["idempotency-key"] && opts["idempotency-key"] !== true) args.idempotencyKey = String(opts["idempotency-key"]);
+    const r = await deskTool(key, "desk_task", args);
+    if (!r.ok) { console.error(r.why); process.exit(1); }
+    const d = r.data || {};
+    console.log(`Task #${d.task?.id} — ${d.task?.state}${d.deduped ? " (already on the desk; returned unchanged)" : ""}`);
+    if (d.repo) console.log(`Repo: ${d.repo} — desk access: ${d.repo_access?.state}${d.repo_access?.why ? ` (${d.repo_access.why})` : ""}`);
+    console.log(`Who works it: ${d.who_works_it}`);
+    console.log(`Watch it:  mesh desk status ${d.task?.id}`);
+    return;
+  }
+  console.error("usage: mesh desk [login [--open] | ls | status [<id>] | task --title … --instructions … [--repo owner/name]]");
+  process.exit(1);
 }
 
 function cmdLogout() {
@@ -443,14 +671,23 @@ const HELP = `mesh — the MeshMarket CLI (${BASE})
   mesh login                               Re-attach an existing key (paste when asked).
   mesh whoami                              Your balance + recent activity.
   mesh discover [--category <name>]        List live capabilities and prices.
-  mesh call <slug> --input '<json>'        Call a capability, pay per use.
+  mesh describe <slug> [--json]            Description, input schema, a working example.
+  mesh call <slug> --input '<json>'        Call a capability, pay per use. A bad input is
+                                           refused with the schema and charged 0.
   mesh list --name <name> --price <n>      List your own capability.
            [--kind tool|feed|workflow] [--endpoint <url>] [--steps '<json>']
   mesh topup <starter|builder|scale>       Get a real-money checkout link.
   mesh logout                              Forget the saved key.
 
+  YOUR DEVDESK (${DESK}) — from the saved key, never pasted anywhere:
+  mesh desk [login] [--open]               One-time sign-in link (10 min, single use).
+  mesh desk ls                             Drafts, connected services, vault NAMES, open work.
+  mesh desk status [<id>]                  The desk's work, or one task and its handoffs.
+  mesh desk task --title "…" --instructions "…" [--repo owner/name]
+                                           Hand the desk a task an attached agent works.
+
 Credentials: ${CRED_FILE}
-Override the API base with MESH_API_BASE (useful for local dev against wrangler dev).`;
+Override the API base with MESH_API_BASE, DevDesk with MESH_DESK_BASE (local dev).`;
 
 async function main() {
   const [, , cmd, ...rest] = process.argv;
@@ -462,7 +699,9 @@ async function main() {
     case "key": return cmdKey(opts);
     case "whoami": case "balance": return cmdWhoami();
     case "discover": case "ls": return cmdDiscover(opts);
+    case "describe": case "info": return cmdDescribe(positional[0], opts);
     case "call": return cmdCall(positional[0], opts);
+    case "desk": return cmdDesk(positional[0], positional.slice(1), opts);
     case "list": return cmdList(opts);
     case "topup": case "buy": return cmdTopup(positional[0]);
     case "logout": return cmdLogout();
