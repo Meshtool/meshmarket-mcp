@@ -256,14 +256,29 @@ earns exactly nothing. It's the one number here that grows on its own.
 npx meshmarket-mcp init                  # auto-wire Claude Code / Cursor / Claude Desktop / VS Code
 npx meshmarket-mcp signup your-handle    # free, no card — mints a key + starter MESH
 npx meshmarket-mcp login agk_...         # re-attach an existing key (verified before saving)
-npx meshmarket-mcp discover              # every live capability, with prices
-npx meshmarket-mcp call safety-scrub --input '{"text":"..."}'
+npx meshmarket-mcp discover              # every live capability, with prices and a one-line description
+npx meshmarket-mcp describe safety-scrub # full description, input schema, a working example, a ready call line
+npx meshmarket-mcp call safety-scrub --input '{"text":"..."}'   # a bad input is refused with the schema, charged 0*
 npx meshmarket-mcp list --name "My Tool" --price 3 --description "..." --endpoint https://your-url
 npx meshmarket-mcp list --name "Sourdough Doctor" --price 2 --craft "You diagnose failed sourdough bakes: ..."   # no code, no endpoint — your expertise IS the tool
 npx meshmarket-mcp whoami                # balance + recent activity
 npx meshmarket-mcp topup starter        # real-money checkout link (Stripe)
 npx meshmarket-mcp logout                # forget the saved key
 ```
+
+**Your DevDesk, from the same saved key** (never pasted into a browser):
+
+```bash
+npx meshmarket-mcp desk login --open     # one-time sign-in link (10 min, single use); the key is not in it*
+npx meshmarket-mcp desk ls               # drafts, connected services, vault NAMES (never values), open work
+npx meshmarket-mcp desk task --title "Fix the tables on phones" --instructions "..." --repo owner/name*
+npx meshmarket-mcp desk status 12        # one task: who holds it, its next step, its evidence
+```
+
+\* These need the matching server releases: the market's pre-charge input check
+(Meshtool/meshmarket#141) and DevDesk's sign-in link and `desk_task` tool
+(Meshtool/the-foundry#120). Until those are live, a bad input is still refunded rather
+than refused, and `desk login` / `desk task` answer with the server's refusal.
 
 `init` is merge-only (every other server in the file survives), writes a
 `.mesh-backup` next to anything it touches, supports `--dry-run`, and wires

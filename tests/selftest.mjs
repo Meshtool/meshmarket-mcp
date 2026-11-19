@@ -15,7 +15,11 @@
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
-import { maskKey, redactKey, slugify, parseArgs } from "../bin/mesh.mjs";
+import { maskKey, redactKey, slugify, parseArgs, oneLine, exampleFromSchema, renderDescribe, renderInvalidInput, workLine } from "../bin/mesh.mjs";
+import { spawn } from "node:child_process";
+import { createServer } from "node:http";
+import { mkdtempSync, mkdirSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const SRC = readFileSync(join(HERE, "..", "bin", "mesh.mjs"), "utf8");
@@ -29,7 +33,7 @@ const CODE = SRC.split("\n")
   .map((l) => l.replace(/^\s*\/\/.*$/, "").replace(/([^:"'`])\/\/.*$/, "$1"))
   .join("\n");
 
-const MIN_INVARIANTS = 17;
+const MIN_INVARIANTS = 33;
 let pass = 0;
 const fails = [];
 const ok = (name, cond) => { if (cond) { pass++; console.log("  ✓ " + name); } else { fails.push(name); console.error("  ✗ " + name); } };
@@ -84,6 +88,82 @@ ok("a dry-run prints the config SHAPE with the key redacted, never raw",
   /redactKey\(JSON\.stringify\(entry\),\s*key\)/.test(CODE));
 ok("the CLI is import-safe: main() runs only when invoked directly",
   /invokedDirectly/.test(CODE) && /if \(invokedDirectly\) main\(\)/.test(CODE));
+
+// ── describe / discover: an agent sees the exact input before it pays ───────
+ok("oneLine keeps the first sentence and fits one line", oneLine("Redact data. Pure matching, no AI.") === "Redact data." && oneLine("x".repeat(200), 40).length === 40);
+const SCHEMA = { type: "object", properties: { think: { type: "string" }, mode: { type: "string", enum: ["fast", "deep"] } }, required: ["think", "mode"] };
+ok("exampleFromSchema fills the required fields with placeholders, never invented fields",
+  JSON.stringify(exampleFromSchema(SCHEMA)) === JSON.stringify({ think: "…", mode: "fast" }) && exampleFromSchema({ type: "object" }) === null);
+const desc = renderDescribe({ slug: "agent-brain", name: "Agent Brain", price: 2, kind: "tool", description: "Think.", input_schema: SCHEMA, example_input: { think: "it's here", mode: "fast" } });
+ok("describe shows the schema, the required fields, the example and a ready mesh call line",
+  desc.includes('"required"') && desc.includes("Required: think, mode") && desc.includes("mesh call agent-brain --input"));
+ok("describe's ready command survives an apostrophe in the example (POSIX single-quote escape)", desc.includes(`'{"think":"it'\\''s here","mode":"fast"}'`));
+ok("describe without a schema says so instead of inventing one", /none declared/.test(renderDescribe({ slug: "x", description: "d" })));
+const inv = renderInvalidInput({ error: "invalid_input", capability: "safety-scrub", charged: 0, errors: [{ field: "text", problem: "required (or one of: content)", about: "the text to scan" }], example: { text: "…" } });
+ok("an invalid_input refusal is shown as 'nothing was charged', with each field, the example and describe", /nothing was charged \(0 MESH\)/.test(inv) && inv.includes("text: required") && inv.includes('{"text":"…"}') && inv.includes("mesh describe safety-scrub"));
+ok("a work line shows id, state, title and who holds it", workLine({ id: "7", state: "open", title: "Fix it", claim: { agent: "Claude", until: "T" } }) === "  #7  open   Fix it  — held by Claude until T");
+
+// ── end to end: the real CLI against a stub market + stub DevDesk ───────────
+// Proves what matters about the desk commands: the key goes ONLY to DevDesk,
+// ONLY in a header, and is never printed — while each command does its job.
+{
+  const seen = [];
+  const desk = { tasks: [] };
+  const server = createServer((req, res) => {
+    let raw = ""; req.on("data", (d) => (raw += d)); req.on("end", () => {
+      seen.push({ url: req.url, auth: req.headers.authorization || "", xkey: req.headers["x-agent-key"] || "", body: raw });
+      const send = (code, o) => { res.writeHead(code, { "content-type": "application/json" }); res.end(JSON.stringify(o)); };
+      if (req.url === "/api/capabilities/agent-brain") return send(200, { slug: "agent-brain", name: "Agent Brain", price: 2, kind: "tool", description: "Think hard.", input_schema: SCHEMA, example_input: { think: "…", mode: "fast" } });
+      if (req.url === "/api/capabilities/nope") return send(404, { error: "not_found" });
+      if (req.url === "/api/call/agent-brain") return send(400, { error: "invalid_input", capability: "agent-brain", charged: 0, errors: [{ field: "think", problem: "required" }], example: { think: "…", mode: "fast" } });
+      if (req.url === "/api/signin/link") return req.headers.authorization === `Bearer ${A_KEY}` ? send(201, { ok: true, url: "https://desk.example/signin/once#CODE123", expires_at: "2026-11-19T23:59:00Z", single_use: true }) : send(401, { error: "the market did not recognize that key" });
+      if (req.url === "/mcp") {
+        const b = JSON.parse(raw || "{}"); const n = b.params?.name; const a = b.params?.arguments || {};
+        const t = (o) => send(200, { jsonrpc: "2.0", id: 1, result: { content: [{ type: "text", text: typeof o === "string" ? o : JSON.stringify(o) }] } });
+        if (n === "board_get") return t({ building: ["landing v3"], did: [], connected: ["github: repo.read"] });
+        if (n === "connections_list") return t("github: repo.read,repo.write");
+        if (n === "vault_list") return t("RESEND_KEY\nSTRIPE_KEY");
+        if (n === "work_list") return t({ trust: "data", work: desk.tasks });
+        if (n === "desk_task") { const w = { id: String(desk.tasks.length + 1), title: a.title, state: "open", claim: null }; desk.tasks.push(w); return t({ task: w, repo: a.repo || null, repo_access: { state: "connected" }, who_works_it: "an attached agent claims it" }); }
+        if (n === "work_get") return t({ trust: "data", work: { ...desk.tasks[0], next: { step: "In acme/app: fix it", by: "the desk's key" } }, handoffs: [{ at: "T", by: { grant: "0", agent: "the desk's key (mesh CLI)" }, next_step: "In acme/app: fix it", evidence: [] }] });
+        return send(200, { jsonrpc: "2.0", id: 1, error: { message: "no such tool" } });
+      }
+      send(404, { error: "unexpected " + req.url });
+    });
+  });
+  await new Promise((r) => server.listen(0, "127.0.0.1", r));
+  const base = `http://127.0.0.1:${server.address().port}`;
+  const home = mkdtempSync(join(tmpdir(), "mesh-selftest-"));
+  mkdirSync(join(home, ".mesh"), { recursive: true });
+  writeFileSync(join(home, ".mesh", "credentials"), JSON.stringify({ handle: "tester", key: A_KEY }), { mode: 0o600 });
+  const run = (...args) => new Promise((resolve) => {
+    const p = spawn(process.execPath, [join(HERE, "..", "bin", "mesh.mjs"), ...args], { env: { ...process.env, HOME: home, USERPROFILE: home, MESH_API_BASE: base, MESH_DESK_BASE: base, CI: "1" } });
+    let out = "", err = ""; p.stdout.on("data", (d) => (out += d)); p.stderr.on("data", (d) => (err += d));
+    p.on("close", (code) => resolve({ code, out, err, all: out + err }));
+  });
+  const d1 = await run("describe", "agent-brain");
+  ok("e2e: mesh describe prints the schema and a ready call line", d1.code === 0 && d1.out.includes("Required: think, mode") && d1.out.includes("mesh call agent-brain --input"));
+  const d2 = await run("describe", "nope");
+  ok("e2e: describe on an unknown slug exits 1 and points at discover", d2.code === 1 && /mesh discover/.test(d2.err));
+  const c1 = await run("call", "agent-brain", "--input", '{"prompt":"x"}');
+  ok("e2e: a refused input says nothing was charged and shows the example, exit 1", c1.code === 1 && /nothing was charged/.test(c1.err) && c1.err.includes('{"think":"…","mode":"fast"}'));
+  const l1 = await run("desk", "login");
+  ok("e2e: mesh desk login prints the one-time link (stdout) and says the key is not in it", l1.code === 0 && l1.out.trim() === "https://desk.example/signin/once#CODE123" && /key is not in it/.test(l1.err));
+  const ls = await run("desk", "ls");
+  ok("e2e: mesh desk ls shows drafts, connections, vault NAMES and work", ls.code === 0 && ls.out.includes("landing v3") && ls.out.includes("github: repo.read") && ls.out.includes("RESEND_KEY") && /names only/.test(ls.out));
+  const tk = await run("desk", "task", "--title", "Fix the tables", "--instructions", "Cards on phones.", "--repo", "acme/app");
+  ok("e2e: mesh desk task returns the task id, repo access and how to watch it", tk.code === 0 && /Task #1/.test(tk.out) && /desk access: connected/.test(tk.out) && /mesh desk status 1/.test(tk.out));
+  const tkBad = await run("desk", "task", "--title", "No instructions");
+  ok("e2e: mesh desk task without instructions is a usage error, nothing sent", tkBad.code === 1 && !seen.some((x) => x.body.includes("No instructions")));
+  const st = await run("desk", "status", "1");
+  ok("e2e: mesh desk status <id> shows the next step and labels agents' words as information", st.code === 0 && st.out.includes("In acme/app: fix it") && /never permission/.test(st.out));
+  const deskHits = seen.filter((x) => x.url === "/mcp" || x.url.startsWith("/api/signin"));
+  ok("e2e: every desk request carries the key in the Authorization header", deskHits.length > 0 && deskHits.every((x) => x.auth === `Bearer ${A_KEY}`));
+  ok("e2e: the key never travels in a URL or a request body", seen.every((x) => !x.url.includes(A_KEY) && !x.body.includes(A_KEY)));
+  ok("e2e: no command printed the key (stdout or stderr)", [d1, d2, c1, l1, ls, tk, tkBad, st].every((r) => !r.all.includes(A_KEY)));
+  ok("e2e: describe and discover are keyless (no key sent to read the catalog)", seen.filter((x) => x.url.startsWith("/api/capabilities/")).every((x) => !x.auth && !x.xkey));
+  server.close();
+}
 
 // ── Result ──────────────────────────────────────────────────────────────────
 const total = pass + fails.length;
